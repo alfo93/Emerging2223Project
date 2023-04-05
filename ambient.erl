@@ -16,7 +16,10 @@ main() ->
     Pid_a = spawn(?MODULE, loop, [Grid]),
     register(ambient, Pid_a),
     Pid_r = spawn(render, main, []),
-    register(render, Pid_r).
+    register(render, Pid_r),
+    Pid_w = spawn(wellknown, main, [[]]),
+    register(wellknown, Pid_w).
+
 
 loop(Grid) ->
     receive
