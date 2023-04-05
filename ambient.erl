@@ -50,3 +50,6 @@ set_state(Grid, X, Y, NewState) ->
                     lists:sublist(Grid, X-1) ++ [NewRow] ++ lists:nthtail(X, Grid)
             end
     end.
+
+init_grid(W, H) ->
+    lists:map(fun(_) -> lists:map(fun(_) -> libero end, lists:seq(1, H)) end, lists:seq(1, W)).
