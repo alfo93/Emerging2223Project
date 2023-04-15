@@ -1,11 +1,13 @@
 -module(car).
--export([main/0, loop/3, friendship/0, state/0, detect/0]).
+-export([main/0, loop/3, friendship/2, state/0, detect/0]).
+
 
 main() ->
-    {F, _} = spawn_monitor(fun () -> friendship() end),
     {S, _} = spawn_monitor(fun () -> state() end),
     {D, _} = spawn_monitor(fun () -> detect() end),
+    {F, _} = spawn_monitor(fun () -> friendship([],S) end),
 
+    wellknown ! {register_pid, [F, S]},
     loop(F, S, D).
 
 loop(F, S, D) ->
@@ -14,11 +16,13 @@ loop(F, S, D) ->
             case Pid of
                 F -> 
                     io:format("Friendship process died~n"),
-                    {NewPid, _} = spawn_monitor(fun friendship/0),
+                    {NewPid, _} = spawn_monitor(fun () -> friendship([],S) end),
+                    wellknown ! {replace_pid, [F, S], {NewPid, S}},
                     loop(NewPid, S, D);
                 S -> 
                     io:format("State process died~n"),
                     {NewPid, _} = spawn_monitor(fun state/0),
+                    wellknown ! {replace_pid, [F, S], {F, NewPid}},
                     loop(F, NewPid, D);
                 D -> 
                     io:format("Detect process died~n"),
@@ -33,28 +37,82 @@ loop(F, S, D) ->
             loop(F, S, D)
     end.   
 
-friendship() ->
-    % sleep for 5 seconds
-    timer:sleep(1000),  
-    1/0,
-    io:format("Friendship bye bye~n").
+
+friendship(Friends, MyState) ->
+    % io:format("Car: ~p, Friends: ~p~n", [self(), Friends]),
+    case length(Friends) < 5 of
+        true ->
+            friendship(ask_for_friends(MyState, Friends, []), MyState);
+        false ->
+            receive
+                {getFriends, PID1, PID2, Ref} -> 
+                    NewFriends = lists:delete([PID1,PID2], Friends),
+                    PID1 ! {myFriends, NewFriends, Ref},
+                    case length(NewFriends) < 5 of
+                        true ->
+                            friendship([[PID1,PID2] | NewFriends], MyState);
+                        false ->
+                            friendship(NewFriends, MyState)
+                    end;
+                    
+                _ ->
+                    io:format("Unknown message~n"),
+                    friendship(Friends, MyState)
+            end
+    end.
+    
+
 
 state() ->
     % sleep for 10 seconds
-    timer:sleep(20000),
+    timer:sleep(200000),
     io:format("State bye bye~n").
 
 detect() ->
     % sleep for 15 seconds
-    timer:sleep(50000),
+    timer:sleep(200000),
     io:format("Detect bye bye~n").
 
 
 
+% S -> State process of caller car
+% Friends -> Friends of caller car
+% NewFriendsList -> List of new friends
+ask_for_friends(S, Friends, FriendsList) ->
+    case Friends of
+        [] ->
+            % Ask to WellKnown
+            wellknown ! {getFriends, self(), S, Ref = make_ref()},
+            receive
+                {myFriends, NewFriends, Ref} ->
+                    NewFriendsList = lists:usort(FriendsList ++ NewFriends),
 
+                    case length(NewFriendsList) < 5 of
+                        true ->
+                            ask_for_friends(S, NewFriendsList, []);
+                        false ->
+                            NewFriendsList
+                    end;
+                _ ->
+                    ask_for_friends(S, FriendsList, [])
+            end;
+        _ ->
+            % Ask to Friends
+            [F, _] = lists:nth(1, Friends),
+            F ! {getFriends, self(), S, Ref = make_ref()},
 
+            receive
+                {myFriends, NewFriends, Ref} ->
+                    NewFriendsList = lists:usort(FriendsList ++ NewFriends),
 
-
-
-
-
+                    case length(NewFriendsList) < 5 of
+                        true ->
+                            ask_for_friends(S, tl(Friends), NewFriendsList);
+                        false ->
+                            NewFriendsList
+                    end;
+                _ ->
+                    ask_for_friends(S, tl(Friends), FriendsList)
+                
+            end
+    end.

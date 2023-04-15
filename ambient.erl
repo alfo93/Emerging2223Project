@@ -13,13 +13,15 @@
 
 main() ->
     Grid = init_grid(5, 5),
-    Pid_a = spawn(?MODULE, loop, [Grid]),
-    register(ambient, Pid_a),
-    Pid_r = spawn(render, main, []),
-    register(render, Pid_r),
-    Pid_w = spawn(wellknown, main, [[]]),
-    register(wellknown, Pid_w).
+    A = spawn(?MODULE, loop, [Grid]),
+    register(ambient, A),
+    W = spawn(wellknown, main, [[]]),
+    register(wellknown, W),
 
+    Cars = [spawn(car, main, []) || _ <- lists:seq(1, 10)],
+
+    R = spawn_link(render, main, []),
+    register(render, R).
 
 loop(Grid) ->
     receive
