@@ -3,9 +3,9 @@
 
 
 main() ->
-    {S, _} = spawn_monitor(fun () -> state() end),
-    {D, _} = spawn_monitor(fun () -> detect() end),
-    {F, _} = spawn_monitor(fun () -> friendship([],S) end),
+    {S, _} = spawn_monitor(?MODULE, state, []),
+    {D, _} = spawn_monitor(?MODULE, detect, []),
+    {F, _} = spawn_monitor(?MODULE, friendship, [[], S]),
 
     wellknown ! {register_pid, [F, S]},
     loop(F, S, D).
@@ -78,41 +78,36 @@ detect() ->
 % S -> State process of caller car
 % Friends -> Friends of caller car
 % NewFriendsList -> List of new friends
-ask_for_friends(S, Friends, FriendsList) ->
-    case Friends of
-        [] ->
-            % Ask to WellKnown
-            wellknown ! {getFriends, self(), S, Ref = make_ref()},
-            receive
-                {myFriends, NewFriends, Ref} ->
-                    NewFriendsList = lists:usort(FriendsList ++ NewFriends),
+ask_for_friends(S, [], FriendsList) ->
+    wellknown ! {getFriends, self(), S, Ref = make_ref()},
+        receive
+            {myFriends, NewFriends, Ref} ->
+                NewFriendsList = lists:usort(FriendsList ++ NewFriends),
 
-                    case length(NewFriendsList) < 5 of
-                        true ->
-                            ask_for_friends(S, NewFriendsList, []);
-                        false ->
-                            NewFriendsList
-                    end;
-                _ ->
-                    ask_for_friends(S, FriendsList, [])
-            end;
-        _ ->
-            % Ask to Friends
-            [F, _] = lists:nth(1, Friends),
-            F ! {getFriends, self(), S, Ref = make_ref()},
+                case length(NewFriendsList) < 5 of
+                    true ->
+                        ask_for_friends(S, NewFriendsList, []);
+                    false ->
+                        NewFriendsList
+                end
+        end;
+ask_for_friends(S, [F | Fs], FriendsList) ->
+    % Ask to Friends
+    [Pid_F, _] = F,
+    Pid_F ! {getFriends, self(), S, Ref = make_ref()},
 
-            receive
-                {myFriends, NewFriends, Ref} ->
-                    NewFriendsList = lists:usort(FriendsList ++ NewFriends),
+    receive
+        {myFriends, NewFriends, Ref} ->
+            NewFriendsList = lists:usort(FriendsList ++ NewFriends),
 
-                    case length(NewFriendsList) < 5 of
-                        true ->
-                            ask_for_friends(S, tl(Friends), NewFriendsList);
-                        false ->
-                            NewFriendsList
-                    end;
-                _ ->
-                    ask_for_friends(S, tl(Friends), FriendsList)
-                
+            case length(NewFriendsList) < 5 of
+                true ->
+                    ask_for_friends(S, Fs, NewFriendsList);
+                false ->
+                    NewFriendsList
             end
+        % Can be useful?
+        % _ ->
+        %     io:format("Unknown message"),
+        %     ask_for_friends(S, [F | Fs], FriendsList)
     end.

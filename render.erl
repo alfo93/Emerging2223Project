@@ -35,12 +35,7 @@ print_grid() ->
         ParkingGrid ->
             % map each element of the grid to a character
             Grid = lists:map(fun(Row) ->
-                lists:map(fun(Cell) ->
-                    case Cell of
-                        libero -> " ";
-                        occupato -> "X"
-                    end
-                end, Row)
+                lists:map(fun print_cell/1, Row)
             end, ParkingGrid),
             io:format("~n"),
             Width = length(hd(Grid)),
@@ -54,4 +49,5 @@ print_grid() ->
             end, Grid)
     end.
 
-    
+print_cell(libero) -> " ";
+print_cell(occupato) -> "X".
