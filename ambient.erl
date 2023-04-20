@@ -18,7 +18,7 @@ main() ->
     W = spawn(wellknown, main, [[]]),
     register(wellknown, W),
 
-    Cars = [spawn(car, main, []) || _ <- lists:seq(1, 10)],
+    Cars = [spawn(car, main, []) || _ <- lists:seq(1, 6)],
 
     R = spawn_link(render, main, []),
     register(render, R).

@@ -1,11 +1,11 @@
 -module(car).
--export([main/0, loop/3, friendship/2, state/0, detect/0]).
+-export([main/0, friendship/0, state/0, detect/0]).
 
 
 main() ->
-    {S, _} = spawn_monitor(?MODULE, state, []),
-    {D, _} = spawn_monitor(?MODULE, detect, []),
-    {F, _} = spawn_monitor(?MODULE, friendship, [[], S]),
+    S = spawn(?MODULE, state, []),
+    D = spawn(?MODULE, detect, []),
+    {F, _} = spawn_monitor(?MODULE, friendship, []),
 
     wellknown ! {register_pid, [F, S]},
     F ! {pid, S, D},
@@ -31,10 +31,15 @@ loop(F, S, D) ->
         %     {NewPid, _} = spawn_monitor(fun detect/0),
         %     loop(F, S, NewPid);
         {'DOWN', _Ref, process, _Pid, _Reason} ->
-            {Snew, _} = spawn_monitor(?MODULE, state, []),
-            {Dnew, _} = spawn_monitor(?MODULE, detect, []),
-            {Fnew, _} = spawn_monitor(?MODULE, friendship, [[], S]),
-            wellknown ! {replace_pid, [F, S], {Fnew, Snew}},
+            Snew = spawn(?MODULE, state, []),
+            Dnew = spawn(?MODULE, detect, []),
+            {Fnew, _} = spawn_monitor(?MODULE, friendship, []),
+
+            wellknown ! {replace_pid, [F, S], [Fnew, Snew]},
+            Fnew ! {pid, Snew, Dnew},
+            Dnew ! {pid, Snew, Fnew},
+            Snew ! {pid, Fnew, Dnew},
+
             loop(Fnew, Snew, Dnew);
         _ ->
             io:format("Unknown message~n"),
@@ -50,13 +55,17 @@ friendship() ->
     end.
 
 friendship(Friends, MyState, MyDetect) ->
-    % io:format("Car: ~p, Friends: ~p~n", [self(), Friends]),
     case length(Friends) < 5 of
         true ->
-            friendship(ask_for_friends(MyState, Friends), MyState, MyDetect);
+            io:format(" Car ~p is searching for new friends, now has ~p~n", [self(), length(Friends)]),
+            NewFriends = ask_for_friends(MyState, Friends),
+            render ! {friendship, MyState, NewFriends},
+            friendship(NewFriends, MyState, MyDetect);
         false ->
+            io:format(" Car ~p has enough friends, now has ~p~n", [self(), length(Friends)]),
             receive
                 {getFriends, PID1, PID2, Ref} -> 
+                    io:format(" Car ~p has received a request for friends from ~p~n", [self(), PID1]),
                     NewFriends = lists:delete([PID1,PID2], Friends),
                     PID1 ! {myFriends, NewFriends, Ref},
                     case length(NewFriends) < 5 of
@@ -64,14 +73,52 @@ friendship(Friends, MyState, MyDetect) ->
                             friendship([[PID1,PID2] | NewFriends], MyState, MyDetect);
                         false ->
                             friendship(NewFriends, MyState, MyDetect)
-                    end;
-                    
-                _ ->
-                    io:format("Unknown message~n"),
-                    friendship(Friends, MyState, MyDetect)
+                    end
             end
     end.
     
+
+% S -> State process of caller car
+% Friends -> Actual list of friends of caller car
+ask_for_friends(S,FriendsList) ->
+    ask_for_friends(S, FriendsList, FriendsList).
+
+% S -> State process of caller car
+% Friends -> Friends of caller car
+% NewFriendsList -> List of new friends
+
+ask_for_friends(S, [F | Fs], FriendsList) ->
+    % Ask to Friends
+    [Pid_F, _] = F,
+    Pid_F ! {getFriends, self(), S, Ref = make_ref()},
+    io:format("Car ~p is waiting for response from car ~p~n", [self(), Pid_F]),
+    wait_for_response(S, [F | Fs], FriendsList, Ref);
+
+% If the list is empty, search for new friends through wellknown actor
+ask_for_friends(S, [], FriendsList) ->
+    wellknown ! {getFriends, self(), S, Ref = make_ref()},
+    io:format("Car ~p is searching for new friends through wellknown actor, now has ~p~n", [self(), length(FriendsList)]),
+    wait_for_response(S, FriendsList, FriendsList, Ref).
+
+
+wait_for_response(S, F, FriendsList, Ref) ->
+    receive
+        {getFriends, PID1, PID2, Ref1} -> 
+            io:format(" Car ~p has received a request for friends from ~p~n", [self(), PID1]),
+            NewFriends = lists:delete([PID1,PID2], FriendsList),
+            PID1 ! {myFriends, NewFriends, Ref1},
+            wait_for_response(S,F,FriendsList,Ref);
+        {myFriends, NewFriends, Ref} ->
+            NewFriendsList = lists:usort(FriendsList ++ NewFriends),
+            case length(NewFriendsList) < 5 of
+                true ->
+                    ask_for_friends(S, F, NewFriendsList);
+                false ->
+                    NewFriendsList
+            end
+    end.
+
+
 
 
 state() ->
@@ -85,9 +132,6 @@ state(F, D) ->
     timer:sleep(200000000000),
     io:format("State bye bye~n").
 
-
-
-
 detect() ->
     receive {pid, S, F} ->
         link(S),
@@ -98,49 +142,3 @@ detect() ->
 detect(S, F) ->
     timer:sleep(2000000000),
     io:format("Detect bye bye~n").
-
-
-ask_for_friends(S,FriendsList) ->
-    ask_for_friends(S, FriendsList, FriendsList).
-
-% S -> State process of caller car
-% Friends -> Friends of caller car
-% NewFriendsList -> List of new friends
-
-
-ask_for_friends(S, [F | Fs], FriendsList) ->
-    % Ask to Friends
-    [Pid_F, _] = F,
-    Pid_F ! {getFriends, self(), S, Ref = make_ref()},
-
-    receive
-        {myFriends, NewFriends, Ref} ->
-            NewFriendsList = lists:usort(FriendsList ++ NewFriends),
-
-            case length(NewFriendsList) < 5 of
-                true ->
-                    ask_for_friends(S, Fs, NewFriendsList);
-                false ->
-                    lists:sublist(NewFriendsList, 5)
-            end
-        % Can be useful?
-        % _ ->
-        %     io:format("Unknown message"),
-        %     ask_for_friends(S, [F | Fs], FriendsList)
-    end;
-
-% If the list is empty, search for new friends through wellknown actor
-ask_for_friends(S, [], FriendsList) ->
-    wellknown ! {getFriends, self(), S, Ref = make_ref()},
-    
-    receive
-        {myFriends, NewFriends, Ref} ->
-            NewFriendsList = lists:usort(FriendsList ++ NewFriends),
-
-            case length(NewFriendsList) < 5 of
-                true ->
-                    ask_for_friends(S, NewFriendsList, []);
-                false ->
-                    lists:sublist(NewFriendsList, 5)
-            end
-    end.

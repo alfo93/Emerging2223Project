@@ -24,9 +24,16 @@ loop(Pos, Targets, Parked, Friendships) ->
             loop(Pos, Targets, Parked, Friendships)
     after 2000 ->
         % Print debugging informations
-        print_grid(),
+        % print_grid(),
+        print_friends(Friendships),
         loop(Pos, Targets, Parked, Friendships)
     end.
+
+print_friends(Friends) ->
+    io:format("~n --------------------- ~n"),
+    maps:map(fun(PID, PIDLIST) ->
+        io:format("Car ~p has ~p friends: ~p~n", [PID, length(PIDLIST), PIDLIST])
+    end, Friends).
 
 
 print_grid() ->
