@@ -1,7 +1,9 @@
 -module(render).
 -export([main/0]).
 
-% La funzione loop/0 rappresenta il ciclo di vita dell'attore render dove ogni 2 secondi viene richiesta la griglia dell'ambient e stampata a video tramite la funzione print_grid/0.
+% La funzione loop/0 rappresenta il ciclo di vita dell'attore render 
+% dove ogni 2 secondi viene richiesta la griglia dell'ambient 
+% e stampata a video tramite la funzione print_grid/0.
 
 main() ->
     loop(#{}, #{}, #{}, #{}).
@@ -19,8 +21,15 @@ loop(Pos, Targets, Parked, Friendships) ->
             loop(Pos, Targets, Parked#{PID=>{X,Y,IsParked}}, Friendships);
         {friendship, PID, PIDLIST} ->
             % Friendships = maps:put(PID, PIDLIST, Friendships),
+            monitor(process, PID),
             loop(Pos, Targets, Parked, Friendships#{PID=>PIDLIST});
-        _ ->
+        {'DOWN', _Ref,  process, _PID, _Reason} ->
+            
+            NewFriendships = maps:remove(_PID, Friendships),
+            NewTargets = maps:remove(_PID, Targets),
+            NewParked = maps:remove(_PID, Parked),
+            loop(Pos, NewTargets, NewParked, NewFriendships);
+        _ -> 
             loop(Pos, Targets, Parked, Friendships)
     after 2000 ->
         % Print debugging informations
@@ -33,6 +42,7 @@ print_friends(Friends) ->
     io:format("~n --------------------- ~n"),
     maps:map(fun(PID, PIDLIST) ->
         io:format("Car ~p has ~p friends: ~p~n", [PID, length(PIDLIST), PIDLIST])
+                
     end, Friends).
 
 

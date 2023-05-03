@@ -3,50 +3,49 @@
 
 
 main() ->
-    S = spawn(?MODULE, state, []),
+    process_flag(trap_exit, true),
+    % Attore state
+    S = spawn(?MODULE, state, []), 
+    % Attore detect
     D = spawn(?MODULE, detect, []),
-    {F, _} = spawn_monitor(?MODULE, friendship, []),
+    % Attore friendship
+    F = spawn_link(?MODULE, friendship, []),
+    monitor(process, F),
 
-    wellknown ! {register_pid, [F, S]},
+    % Registrazione dei pid dei processi
+    wellknown ! {register_pid, {F, S}},
+
+    % Invio dei pid agli attori della macchina
     F ! {pid, S, D},
     D ! {pid, S, F},
     S ! {pid, F, D},
-
     loop(F, S, D).
 
 loop(F, S, D) ->
     receive
-        % {'DOWN', _Ref, process, F, _Reason} ->
-        %     io:format("Friendship process died~n"),
-        %     {NewPid, _} = spawn_monitor(fun () -> friendship([],S) end),
-        %     wellknown ! {replace_pid, [F, S], {NewPid, S}},
-        %     loop(NewPid, S, D);
-        % {'DOWN', _Ref, process, S, _Reason} ->
-        %     io:format("State process died~n"),
-        %     {NewPid, _} = spawn_monitor(fun state/0),
-        %     wellknown ! {replace_pid, [F, S], {F, NewPid}},
-        %     loop(F, NewPid, D);
-        % {'DOWN', _Ref, process, D, _Reason} ->
-        %     io:format("Detect process died~n"),
-        %     {NewPid, _} = spawn_monitor(fun detect/0),
-        %     loop(F, S, NewPid);
-        {'DOWN', _Ref, process, _Pid, _Reason} ->
+        {'EXIT', _, _reason} ->
+            exit(_reason);
+        % DOWN: il processo è morto
+        % process: tipo di messaggio
+        % F: pid del processo friendship morto
+        % _Reason: ragione della morte
+        {'DOWN', _Ref, process, F, _Reason} ->
             Snew = spawn(?MODULE, state, []),
             Dnew = spawn(?MODULE, detect, []),
-            {Fnew, _} = spawn_monitor(?MODULE, friendship, []),
+            Fnew = spawn_link(?MODULE, friendship, []),
 
-            wellknown ! {replace_pid, [F, S], [Fnew, Snew]},
+            wellknown ! {replace_pid, {F, S}, {Fnew, Snew}},
             Fnew ! {pid, Snew, Dnew},
             Dnew ! {pid, Snew, Fnew},
             Snew ! {pid, Fnew, Dnew},
 
             loop(Fnew, Snew, Dnew);
         _ ->
-            io:format("Unknown message~n"),
+            io:format("Car ~p received an unknown message~n", [self()]),
             loop(F, S, D)
     end.   
 
-% link tra le componenti della macchina
+% FRIENDSHIP COMPONENT
 friendship() ->
     receive {pid, S, D} ->
         link(S),
@@ -57,23 +56,20 @@ friendship() ->
 friendship(Friends, MyState, MyDetect) ->
     case length(Friends) < 5 of
         true ->
-            io:format(" Car ~p is searching for new friends, now has ~p~n", [self(), length(Friends)]),
-            NewFriends = ask_for_friends(MyState, Friends),
-            render ! {friendship, MyState, NewFriends},
-            friendship(NewFriends, MyState, MyDetect);
+            AllMyFriends = ask_for_friends(MyState, Friends),            
+            % monitoring all new friends
+            [ monitor(process, F) || {F, _} <-lists:subtract(AllMyFriends, Friends)],
+            render ! {friendship, MyState, AllMyFriends},
+            friendship(AllMyFriends, MyState, MyDetect);
         false ->
-            io:format(" Car ~p has enough friends, now has ~p~n", [self(), length(Friends)]),
             receive
                 {getFriends, PID1, PID2, Ref} -> 
-                    io:format(" Car ~p has received a request for friends from ~p~n", [self(), PID1]),
-                    NewFriends = lists:delete([PID1,PID2], Friends),
+                    NewFriends = lists:delete({PID1,PID2}, Friends),
                     PID1 ! {myFriends, NewFriends, Ref},
-                    case length(NewFriends) < 5 of
-                        true ->
-                            friendship([[PID1,PID2] | NewFriends], MyState, MyDetect);
-                        false ->
-                            friendship(NewFriends, MyState, MyDetect)
-                    end
+                    friendship(Friends, MyState, MyDetect);
+                {'DOWN', _Ref, process, _Pid, _Reason} ->
+                    io:format("Car ~p has lost a friend~n", [self()]),
+                    friendship(remove_dead_friend(Friends, _Pid), MyState, MyDetect)
             end
     end.
     
@@ -86,13 +82,9 @@ ask_for_friends(S,FriendsList) ->
 % S -> State process of caller car
 % Friends -> Friends of caller car
 % NewFriendsList -> List of new friends
-
-ask_for_friends(S, [F | Fs], FriendsList) ->
-    % Ask to Friends
-    [Pid_F, _] = F,
-    Pid_F ! {getFriends, self(), S, Ref = make_ref()},
-    io:format("Car ~p is waiting for response from car ~p~n", [self(), Pid_F]),
-    wait_for_response(S, [F | Fs], FriendsList, Ref);
+ask_for_friends(S, [{F,_} | T], FriendsList) ->
+    F ! {getFriends, self(), S, Ref = make_ref()},
+    wait_for_response(S, T, FriendsList, Ref);
 
 % If the list is empty, search for new friends through wellknown actor
 ask_for_friends(S, [], FriendsList) ->
@@ -103,11 +95,17 @@ ask_for_friends(S, [], FriendsList) ->
 
 wait_for_response(S, F, FriendsList, Ref) ->
     receive
-        {getFriends, PID1, PID2, Ref1} -> 
-            io:format(" Car ~p has received a request for friends from ~p~n", [self(), PID1]),
-            NewFriends = lists:delete([PID1,PID2], FriendsList),
-            PID1 ! {myFriends, NewFriends, Ref1},
-            wait_for_response(S,F,FriendsList,Ref);
+        {getFriends, PID1, PID2, NewRef} -> 
+            io:format("Car ~p received a getFriends message from ~p~n", [self(), PID1]),
+            NewFriends = lists:delete({PID1,PID2}, FriendsList),
+            PID1 ! {myFriends, NewFriends, NewRef},
+            MyNewFriends = lists:usort(FriendsList ++ NewFriends),
+            case length(MyNewFriends) < 5 of
+                true ->
+                    ask_for_friends(S, F, MyNewFriends);
+                false ->
+                    MyNewFriends
+            end;
         {myFriends, NewFriends, Ref} ->
             NewFriendsList = lists:usort(FriendsList ++ NewFriends),
             case length(NewFriendsList) < 5 of
@@ -115,12 +113,26 @@ wait_for_response(S, F, FriendsList, Ref) ->
                     ask_for_friends(S, F, NewFriendsList);
                 false ->
                     NewFriendsList
-            end
+            end;
+        {'DOWN', _Ref, process, _Pid, _Reason} ->
+                    io:format("Car ~p has lost a friend~n", [self()]),
+                    wait_for_response(S, remove_dead_friend(F, _Pid), remove_dead_friend(FriendsList, _Pid), Ref)
+    end.
+
+
+% remove_dead_friend: (list, pid) -> list
+% rimuove dalla lista di amici 
+% la coppia con il pid del processo morto
+remove_dead_friend([], _) -> [];
+remove_dead_friend([{F, S}|T], DeadFriend) -> 
+    if F == DeadFriend -> T; 
+        true -> [{F, S}|remove_dead_friend(T, DeadFriend)]
     end.
 
 
 
 
+% STATE COMPONENT
 state() ->
     receive {pid, F, D} ->
         link(F),
@@ -128,10 +140,16 @@ state() ->
         state(F, D)
     end.
 
+% TODO: implement this function
 state(F, D) ->
     timer:sleep(200000000000),
     io:format("State bye bye~n").
 
+
+
+
+
+% DETECT COMPONENT
 detect() ->
     receive {pid, S, F} ->
         link(S),
@@ -139,6 +157,7 @@ detect() ->
         detect(S, F)
     end.
 
+% TODO: implement this function
 detect(S, F) ->
     timer:sleep(2000000000),
     io:format("Detect bye bye~n").

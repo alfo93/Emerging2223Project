@@ -21,7 +21,17 @@ main() ->
     Cars = [spawn(car, main, []) || _ <- lists:seq(1, 6)],
 
     R = spawn_link(render, main, []),
-    register(render, R).
+    register(render, R),
+    car_killer(Cars).
+
+car_killer(Cars) ->
+    timer:sleep(2000),
+    Car = lists:nth(rand:uniform(length(Cars)), Cars),
+    io:format("Car~p is going to die!~n", [Car]),
+    exit(Car, die),
+    NewCar = spawn(car, main, []),
+    io:format("A new car ~p is born!~n", [NewCar]),
+    car_killer([NewCar|lists:delete(Car, Cars)]).
 
 loop(Grid) ->
     receive
