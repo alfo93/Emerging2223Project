@@ -1,5 +1,5 @@
 -module(ambient).
--export([main/0, loop/1]).
+-export([main/0, loop/2]).
 
 % Nella funzione main/0 viene creato il processo dell'attore ambient e viene registrato con il nome ambient. 
 % La funzione loop/1 rappresenta il ciclo di vita dell'attore ambient e riceve messaggi tramite il costrutto receive.
@@ -12,8 +12,8 @@
 % La griglia dell'ambient è rappresentata come una lista di liste in cui ogni elemento rappresenta lo stato di una cella (libero o occupato).
 
 main() ->
-    Grid = init_grid(5, 5),
-    A = spawn(?MODULE, loop, [Grid]),
+    Grid = utils:init_grid(5, 5, libero),
+    A = spawn(?MODULE, loop, [Grid, []]),
     register(ambient, A),
     W = spawn(wellknown, main, [[]]),
     register(wellknown, W),
@@ -33,38 +33,58 @@ car_killer(Cars) ->
     io:format("A new car ~p is born!~n", [NewCar]),
     car_killer([NewCar|lists:delete(Car, Cars)]).
 
-loop(Grid) ->
+loop(Grid, ParkedCars) ->
     receive
         {check_state, Caller, {X, Y}} ->
-            State = get_state(Grid, X, Y),
+            State = utils:get_state(Grid, X, Y),
             Caller ! {state, State},
-            loop(Grid);
+            loop(Grid,ParkedCars);
         {update_state, {X, Y}, NewState} ->
-            NewGrid = set_state(Grid, X, Y, NewState),
-            loop(NewGrid);
+            NewGrid = utils:set_state(Grid, X, Y, NewState),
+            loop(NewGrid, ParkedCars);
         get_grid ->
             render ! Grid,
-            loop(Grid)
-    end.
+            loop(Grid,ParkedCars);
 
-get_state(Grid, X, Y) ->
-    case lists:nth(X, Grid) of
-        Row when is_list(Row) ->
-            case lists:nth(Y, Row) of
-                State when State =:= libero; State =:= occupato ->
-                    State
+        % Specifiche progetto 
+        {isFree, PID, X, Y, Ref} ->
+            IsFree = case utils:get_state(Grid, X, Y) of
+                libero -> true;
+                _ -> false
+            end,
+            PID ! {status, Ref, IsFree},
+            loop(Grid, ParkedCars); 
+
+        {park, PID, X, Y, Ref} ->
+            Mref = monitor(process, PID),
+            NewGrid = utils:set_state(Grid, X, Y, occupato),
+            loop(NewGrid,ParkedCars ++ [{PID,X,Y, Ref, Mref}]);
+
+        {leave, PID, Ref} ->
+            case lists:keyfind(PID, 1, ParkedCars) of
+                {PID, X, Y, OldRef, Mref} when Ref =:= OldRef -> 
+                        io:format("Car ~p is leaving in ~p, ~p~n", [PID, X, Y]),
+                        NewGrid = utils:set_state(Grid, X, Y, libero),
+                        demonitor(Mref),
+                        loop(NewGrid, lists:keydelete(PID, 1, ParkedCars));
+                    _ ->
+                        % Error! PID not found or Ref is not the same, define behaviour
+                        loop(Grid, ParkedCars)
+                end;
+            
+        {'DOWN', _, process, PID, _} ->
+            case lists:keyfind(PID, 1, ParkedCars) of
+                false ->
+                    % Handle the case where PID is not found in ParkedCars
+                    loop(Grid, ParkedCars);
+                {_, X, Y, _Ref, Mref} ->
+                    demonitor(Mref),
+                    NewGrid = utils:set_state(Grid, X, Y, libero),
+                    loop(NewGrid, lists:keydelete(PID, 1, ParkedCars))
             end
     end.
 
-set_state(Grid, X, Y, NewState) ->
-    case lists:nth(X, Grid) of
-        Row when is_list(Row) ->
-            case lists:nth(Y, Row) of
-                State when State =:= libero; State =:= occupato ->
-                    NewRow = lists:sublist(Row, Y-1) ++ [NewState] ++ lists:nthtail(Y, Row),
-                    lists:sublist(Grid, X-1) ++ [NewRow] ++ lists:nthtail(X, Grid)
-            end
-    end.
 
-init_grid(W, H) ->
-    lists:map(fun(_) -> lists:map(fun(_) -> libero end, lists:seq(1, H)) end, lists:seq(1, W)).
+
+
+

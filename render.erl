@@ -33,8 +33,8 @@ loop(Pos, Targets, Parked, Friendships) ->
             loop(Pos, Targets, Parked, Friendships)
     after 2000 ->
         % Print debugging informations
-        % print_grid(),
-        print_friends(Friendships),
+        print_grid(),
+        % print_friends(Friendships),
         loop(Pos, Targets, Parked, Friendships)
     end.
 
