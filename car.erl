@@ -1,9 +1,10 @@
 -module(car).
 -export([main/0, friendship/0, state/0, detect/0]).
--define(MAX_FRIENDS,5).
+-include("utils.hrl").
 
 main() ->
     process_flag(trap_exit, true),
+    % io:format("Car: starting~n"),
     % Attore state
     S = spawn(?MODULE, state, []), 
     % Attore detect
@@ -23,16 +24,16 @@ main() ->
 
 loop(F, S, D) ->
     receive
+        {'EXIT', F, _reason} ->
+            loop(F, S, D);
+
         {'EXIT', _, _reason} ->
             exit(_reason);
 
-        % DOWN: il processo è morto
-        % process: tipo di messaggio
-        % F: pid del processo friendship morto
-        % _Reason: ragione della morte
         {'DOWN', _Ref, process, _F, _Reason} ->
             demonitor(_Ref, [flush]),
 
+            io:format("Car: friendship component died~n"),
             Snew = spawn(?MODULE, state, []),
             Dnew = spawn(?MODULE, detect, []),
             Fnew = spawn_link(?MODULE, friendship, []),
@@ -44,7 +45,7 @@ loop(F, S, D) ->
 
             loop(Fnew, Snew, Dnew);
         _ ->
-            io:format("Car ~p received an unknown message~n", [self()]),
+            io:format("Car: unknown message~n"),
             loop(F, S, D)
     end.   
 
@@ -56,6 +57,10 @@ friendship() ->
         friendship([], S, D)
     end.
 
+
+% Friends -> List of friends
+% MyState -> State process of caller car
+% MyDetect -> Detect process of caller car
 friendship(Friends, MyState, MyDetect) ->
     case length(Friends) < ?MAX_FRIENDS of
         true ->
@@ -79,7 +84,7 @@ friendship(Friends, MyState, MyDetect) ->
 
 
 % S -> State process of caller car
-% Friends -> Actual list of friends of caller car
+% FriendsLisr -> Actual list of friends of caller car
 ask_for_friends(S,FriendsList) ->
     ask_for_friends(S, FriendsList, FriendsList).
 
@@ -96,6 +101,10 @@ ask_for_friends(S, [], FriendsList) ->
     wait_for_response(S, FriendsList, FriendsList, Ref).
 
 
+% S -> State process of caller car
+% F -> List of friends of caller car
+% FriendsList -> List of friends of caller car
+% Ref -> Reference of the message
 wait_for_response(S, F, FriendsList, Ref) ->
     receive
         {getFriends, PID1, PID2, NewRef} -> 
@@ -117,8 +126,8 @@ wait_for_response(S, F, FriendsList, Ref) ->
                     NewFriendsList
             end;
         {'DOWN', _Ref, process, _Pid, _Reason} ->
-                    demonitor(Ref, [flush]),
-                    wait_for_response(S, remove_dead_friend(F, _Pid), remove_dead_friend(FriendsList, _Pid), Ref)
+            demonitor(Ref, [flush]),
+            wait_for_response(S, remove_dead_friend(F, _Pid), remove_dead_friend(FriendsList, _Pid), Ref)
     end.
 
 
@@ -131,11 +140,52 @@ remove_dead_friend(Friends, DeadFriend) -> lists:filter(fun({F, _}) -> F =/= Dea
 
 % STATE COMPONENT
 state() ->
-    Grid = utils:init_grid(5, 5, sconosciuto),
+    Grid = utils:init_grid(sconosciuto),
     receive {pid, F, D} ->
         link(F),
         link(D),
-        state(F, D, Grid)
+        state(F, D, Grid, 0,0)
+    end.
+
+% Take the information of the Grid's cells.
+% When a new information is discoverd, send a message to the friends (state components)
+% If the goal is occupied, change it
+% F -> pid of friendship component
+% D -> pid of detect component
+% Grid -> grid of the ambient
+% TX, TY -> target position
+state(F, D, Grid, TX, TY) ->
+    receive
+        {askTarget, D, _, _, Ref} ->
+            {NX, NY} = utils:find_free_cell(Grid),
+            D ! {newTarget, NX, NY, Ref},
+            state(F, D, Grid, NX, NY),
+            render ! {status, self(), "Sto dando un nuovo target"};
+        % receive the state from Detect to update the Grid and notify the new state
+        % if the newState is different from the old one, send a message to the friends
+            % send the message to friends
+        {notifyStatus, X, Y, IsFree} -> 
+            NewState = case IsFree of 
+                true -> libero;
+                false -> occupato
+            end,
+
+            render ! {status, self(), "Ho ricevuto una notifica, cambio stato"},
+            OldState = utils:get_state(Grid, X, Y),      
+            utils:set_state(Grid, X, Y, NewState),         
+            case OldState =/= IsFree of
+                true -> notify_friends(F, IsFree, X, Y)
+            end,
+
+            case ({TX, TY} =:= {X, Y}) and NewState =:= occupato of
+                true ->
+                    {NX, NY} = utils:find_free_cell(Grid),
+                    D ! {updateTarget, self(), {NX, NY}},
+                    render ! {status, self(), "Sto dando un nuovo target dopo gossiping"},
+                    state(F, D, Grid, NX, NY);
+                false ->
+                    state(F, D, Grid, TX, TY)
+            end
     end.
 
 notify_friends(F, State, X, Y) ->
@@ -145,46 +195,12 @@ notify_friends(F, State, X, Y) ->
     end.
 
 
-% Take the information of the Grid's cells.
-% When a new information is discoverd, send a message to the friends (state components)
-% If the goal is occupied, change it
-% F -> pid of friendship component
-% D -> pid of detect component
-% Grid -> grid of the ambient
-state(F, D, Grid) ->
-    receive
-        {askTarget, D, X, Y, Ref} ->
-            % TODO: find new target 
-            D ! {newTarget, X, Y, Ref},
-            state(F, D, Grid);
-        % receive the state from Detect to update the Grid and notify the new state
-        % if the newState is different from the old one, send a message to the friends
-            % get from F the list of friends
-            % send the message to friends
-        {notifyStatus, X, Y, IsFree} -> 
-            NewState = case IsFree of 
-                true -> libero;
-                false -> occupato
-            end,
-
-            OldState = utils:get_state(Grid, X, Y),      
-            utils:set_state(Grid, X, Y, NewState),         
-            case OldState =/= IsFree of
-                true -> notify_friends(F, IsFree, X, Y)
-            end,
-
-            % TODO: UPDATE TARGET!!!
-            %
-            state(F, D, Grid)
-    end.
-
-
 % DETECT COMPONENT
 detect() ->
     receive {pid, S, F} ->
         link(S),
         link(F),
-        POS = {rand:uniform(5), rand:uniform(5)},% TODO: change this, real grid size
+        POS = {rand:uniform(?GRID_HEIGHT), rand:uniform(?GRID_WIDTH)},
         detect(S, POS)
     end.
 
@@ -194,11 +210,15 @@ detect(S, {XP,YP}) ->
     receive
         {newTarget, XT, YT, Ref} ->
             render ! {target, S, XT, YT},
+            render ! {position, S, XP, YP},
+            render ! {parked, S, XP, YP, false},
             detect(S, {XP,YP}, {XT,YT})
     end.
 
 detect(S, {XP,YP}, {XT,YT} ) ->
+    timer:sleep(?TIME_STEP),
     {NEW_XP, NEW_YP} = move(XP, YP, XT, YT), 
+    render ! {status, "Sono in movimento"},
     ambient ! {isFree, self(), NEW_XP, NEW_YP, Ref = make_ref()},
     render ! {position, S, NEW_XP, NEW_YP},
     detect_response(S, {NEW_XP, NEW_YP}, {XT,YT}, Ref).
@@ -216,23 +236,103 @@ detect_response(S, {XP,YP}, {XT,YT}, Ref) ->
                     % Car is parking 
                     ambient ! {park, self(), XT, YT, NewRef},
                     render ! {parked, S, XP, YP, true},
+                    render ! {status, "Sono parcheggiato"},
                     % Car is parked and waiting 
                     Time = rand:uniform(5),
                     timer:sleep(Time * 1000),
                     % Car is leaving
                     ambient ! {leave, self(), NewRef},
                     render ! {parked, S, XP, YP, false},
+                    render ! {status, "Sono ripartito"},
                     detect(S, {XP,YP});
                 false ->
                     detect(S, {XP,YP}, {XT, YT})
             end
     end.
 
-% TODO: to be implemented 
-move(XP, YP, XT, YT) ->
-    {XP,YP}.
+move(Xi, Yi, Xi, Yi) ->
+    {Xi, Yi};
 
-            
-            
+% Case in which (Xi, Yi) and (Xf, Yf) are aligned alongside y-axis
+move(Xi, Yi, Xi, Yf) ->
+    Direction = 2,
+    move_along(Xi, Yi, Xi, Yf, Direction);
 
+% Case in which (Xi, Yi) and (Xf, Yf) are aligned alongside x-axis
+move(Xi, Yi, Xf, Yi) ->
+    Direction = 1,
+    move_along(Xi, Yi, Xf, Yi, Direction);
+
+% (Xi, Yi) -> current position
+% (Xf, Yf) -> target position 
+move(Xi, Yi, Xf, Yf) ->
+    Direction = rand:uniform(2),
+    move_along(Xi, Yi, Xf, Yf, Direction).
+
+% Direction = 1 -> move alongside x
+% Direction = 2 -> move alongside y
+move_along(Xi, Yi, Xf, _, 1) ->
+    % Compute min between (Xi, Xf) and ((Xi, W) + (W, Xf))
+
+    % Modular distance
+    D_m = ?GRID_WIDTH - Xi + Xf,
+
+    % Grid distance
+    D_g = abs_dif(Xf,Xi),
+    D_g = abs(Xf - Xi),
     
+    case min(D_m, D_g) of
+        D_g ->
+            % signed_norm returns +-1, gives the direction alongside x. 
+            Step = signed_norm(Xf, Xi),
+            % io:format("Car along x: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi + Step, Yi]),
+            {Xi + Step, Yi};
+        D_m ->
+            Step = signed_norm(?GRID_WIDTH, Xi),
+
+            % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_WIDTH`.
+            % If the modular sum is equal to 0, we want the first position in the grid,
+            % so we always compute the max between the modular sum and 1.
+            New_X = max(Xi+Step rem (?GRID_WIDTH + 1), 1),
+            % io:format("Car along x: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, New_X, Yi]),
+            {New_X, Yi}
+    end;
+
+move_along(Xi, Yi, _, Yf, 2) ->
+    % Compute min between (Yi, Yf) and ((Yi, H) + (H, Yf))
+
+    % Modular distance
+    D_m = ?GRID_HEIGHT - Yi + Yf,
+
+
+    % Grid distance
+    % D_g = abs_dif(Yf, Yi),
+    D_g = abs(Yf - Yi),
+   
+    case min(D_m, D_g) of
+        D_g ->
+            Step = signed_norm(Yf, Yi),
+            % io:format("Car along y: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi, Yi + Step]),
+            {Xi, Yi + Step};
+        D_m ->
+            Step = signed_norm(?GRID_HEIGHT, Yi),
+
+            % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_HEIGHT`.
+            % If the modular sum is equal to 0, we want the first position in the grid,
+            % so we always compute the max between the modular sum and 1.
+            New_Y = max((Yi + Step) rem (?GRID_HEIGHT + 1), 1),
+            % io:format("Car along y: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi, New_Y]),
+            {Xi, New_Y}
+    end.    
+
+signed_norm(Xm, X0) ->
+    case Xm - X0 of
+        0 -> 0;
+        _ -> trunc((Xm - X0) / abs(Xm - X0))
+    end.
+
+abs_dif(A,B) ->
+    case A - B of
+        0 -> 0;
+        _ -> abs(A - B)
+    end.

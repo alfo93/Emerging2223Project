@@ -1,0 +1,5 @@
+-define(MAX_FRIENDS,5).
+-define(GRID_WIDTH, 5).
+-define(GRID_HEIGHT, 5).
+-define(TIME_STEP, 8000).
+-define(N_CARS, 6).
