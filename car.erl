@@ -3,8 +3,6 @@
 -include("utils.hrl").
 
 main() ->
-    process_flag(trap_exit, true),
-    % io:format("Car: starting~n"),
     % Attore state
     S = spawn(?MODULE, state, []), 
     % Attore detect
@@ -12,6 +10,8 @@ main() ->
     % Attore friendship
     F = spawn_link(?MODULE, friendship, []),
     monitor(process, F),
+ 
+    process_flag(trap_exit, true),
 
     % Registrazione dei pid dei processi
     wellknown ! {register_pid, {F, S}},
@@ -30,10 +30,9 @@ loop(F, S, D) ->
         {'EXIT', _, _reason} ->
             exit(_reason);
 
-        {'DOWN', _Ref, process, _F, _Reason} ->
+        {'DOWN', _Ref, process, F, _Reason} ->
             demonitor(_Ref, [flush]),
 
-            io:format("Car: friendship component died~n"),
             Snew = spawn(?MODULE, state, []),
             Dnew = spawn(?MODULE, detect, []),
             Fnew = spawn_link(?MODULE, friendship, []),
@@ -42,10 +41,9 @@ loop(F, S, D) ->
             Fnew ! {pid, Snew, Dnew},
             Dnew ! {pid, Snew, Fnew},
             Snew ! {pid, Fnew, Dnew},
-
             loop(Fnew, Snew, Dnew);
+
         _ ->
-            io:format("Car: unknown message~n"),
             loop(F, S, D)
     end.   
 
@@ -62,11 +60,12 @@ friendship() ->
 % MyState -> State process of caller car
 % MyDetect -> Detect process of caller car
 friendship(Friends, MyState, MyDetect) ->
+    render ! {friendship, MyState, Friends},
     case length(Friends) < ?MAX_FRIENDS of
         true ->
-            AllMyFriends = ask_for_friends(MyState, Friends),            
+            % Be sure to have `MAX_FRIENDS` friends for each car.
+            AllMyFriends = lists:sublist(ask_for_friends(MyState, Friends), ?MAX_FRIENDS),          
             [ monitor(process, F) || {F, _} <-lists:subtract(AllMyFriends, Friends)],
-            render ! {friendship, MyState, AllMyFriends},
             friendship(AllMyFriends, MyState, MyDetect);
         false ->
             receive
@@ -74,10 +73,12 @@ friendship(Friends, MyState, MyDetect) ->
                     NewFriends = lists:delete({PID1,PID2}, Friends),
                     PID1 ! {myFriends, NewFriends, Ref},
                     friendship(Friends, MyState, MyDetect);
-                {getOwnFriends, MyState, Ref} ->
-                    MyState ! {myFriends, Friends, Ref};
+                {getOwnFriends, MyState} ->
+                    MyState ! {myOwnFriends, Friends},
+                    friendship(Friends, MyState, MyDetect);
                 {'DOWN', _Ref, process, _DeadPid, _Reason} ->
                     demonitor(_Ref, [flush]),
+                    render ! {render_status, MyState, {"Friend died", _DeadPid}},
                     friendship(remove_dead_friend(Friends, _DeadPid), MyState, MyDetect)
             end
     end.
@@ -154,44 +155,47 @@ state() ->
 % D -> pid of detect component
 % Grid -> grid of the ambient
 % TX, TY -> target position
+new_state(true) ->
+    libero;
+new_state(false) ->
+    occupato.
+
 state(F, D, Grid, TX, TY) ->
     receive
-        {askTarget, D, _, _, Ref} ->
+        {askTarget, D, Ref} ->
+
             {NX, NY} = utils:find_free_cell(Grid),
+            % render ! {render_status, self(), io_lib:format("Sending new target: {~B, ~B}", [NX, NY])},
             D ! {newTarget, NX, NY, Ref},
-            state(F, D, Grid, NX, NY),
-            render ! {status, self(), "Sto dando un nuovo target"};
+
+            state(F, D, Grid, NX, NY);
         % receive the state from Detect to update the Grid and notify the new state
         % if the newState is different from the old one, send a message to the friends
-            % send the message to friends
+        % send the message to friends
         {notifyStatus, X, Y, IsFree} -> 
-            NewState = case IsFree of 
-                true -> libero;
-                false -> occupato
-            end,
-
-            render ! {status, self(), "Ho ricevuto una notifica, cambio stato"},
-            OldState = utils:get_state(Grid, X, Y),      
-            utils:set_state(Grid, X, Y, NewState),         
-            case OldState =/= IsFree of
-                true -> notify_friends(F, IsFree, X, Y)
-            end,
-
-            case ({TX, TY} =:= {X, Y}) and NewState =:= occupato of
+            NewState = new_state(IsFree), 
+            OldState = utils:get_state(Grid, X, Y), 
+            NewGrid = utils:set_state(Grid, X, Y, NewState), 
+            
+            case OldState =/= NewState of
+                true -> notify_friends(F, IsFree, X, Y);
+                false -> ok
+            end, 
+        
+            case ({TX, TY} =:= {X, Y}) andalso not(IsFree) of
                 true ->
-                    {NX, NY} = utils:find_free_cell(Grid),
+                    {NX, NY} = utils:find_free_cell(NewGrid),
                     D ! {updateTarget, self(), {NX, NY}},
-                    render ! {status, self(), "Sto dando un nuovo target dopo gossiping"},
-                    state(F, D, Grid, NX, NY);
+                    state(F, D, NewGrid, NX, NY);
                 false ->
-                    state(F, D, Grid, TX, TY)
+                    state(F, D, NewGrid, TX, TY)
             end
     end.
 
-notify_friends(F, State, X, Y) ->
+notify_friends(F, IsFree, X, Y) ->
     F ! {getOwnFriends, self()},
     receive
-        {myFriends, Friends} -> [S ! {notifyStatus, {X, Y}, State} || {_, S} <- Friends]
+        {myOwnFriends, Friends} -> [S ! {notifyStatus, X, Y, IsFree} || {_, S} <- Friends]
     end.
 
 
@@ -200,13 +204,15 @@ detect() ->
     receive {pid, S, F} ->
         link(S),
         link(F),
+        render ! {render_status, S, "Detect is ready"},
         POS = {rand:uniform(?GRID_HEIGHT), rand:uniform(?GRID_WIDTH)},
         detect(S, POS)
     end.
 
 % If no target is set, ask for a new one to State
 detect(S, {XP,YP}) -> 
-    S ! {askTarget, self(), XP, YP, Ref = make_ref()},
+    S ! {askTarget, self(), Ref = make_ref()},
+    render ! {render_status, S, "Waiting for target"},
     receive
         {newTarget, XT, YT, Ref} ->
             render ! {target, S, XT, YT},
@@ -218,47 +224,57 @@ detect(S, {XP,YP}) ->
 detect(S, {XP,YP}, {XT,YT} ) ->
     timer:sleep(?TIME_STEP),
     {NEW_XP, NEW_YP} = move(XP, YP, XT, YT), 
-    render ! {status, "Sono in movimento"},
     ambient ! {isFree, self(), NEW_XP, NEW_YP, Ref = make_ref()},
     render ! {position, S, NEW_XP, NEW_YP},
+    
+    % Send to render movement status
+    % render ! {render_status, S, {"Moving to position", {NEW_XP, NEW_YP}}},
+    render ! {render_status, S, io_lib:format("Moving to position {~B, ~B}", [NEW_XP, NEW_YP])},
+
     detect_response(S, {NEW_XP, NEW_YP}, {XT,YT}, Ref).
 
+% Case of {XP, YP} =:= {XT, YT}, target reached.
+detect_response(S, {XP, YP}, {XP, YP}, Ref) ->
+    receive 
+        {status, Ref, IsFree} ->
+            S ! {notifyStatus, XP, YP, IsFree},
+            NewRef = make_ref(),
+            % Car is parking 
+            ambient ! {park, self(), XP, YP, NewRef},
+            render ! {parked, S, XP, YP, true},
+            % Car is parked and waiting 
+            Time = rand:uniform(5),
+            render ! {render_status, S, io_lib:format("Parked, waiting for ~B seconds", [Time])},
+            timer:sleep(Time * 1000),
+            % Car is leaving
+            ambient ! {leave, self(), NewRef},
+            render ! {parked, S, XP, YP, false},
+            detect(S, {XP,YP});
+        _ -> 
+            detect_response(S, {XP, YP}, {XP, YP}, Ref)
+    end;
+
+% Generic case {XP, YP} =/= {XT, YT}, target not reached
 detect_response(S, {XP,YP}, {XT,YT}, Ref) ->
+    % QUI
     receive 
         {updateTarget, S, {NEW_XT, NEW_YT}} ->
             render ! {target, S, XT, YT},
             detect_response(S, {XP, YP}, {NEW_XT, NEW_YT}, Ref);
         {status, Ref, IsFree} ->
             S ! {notifyStatus, XP, YP, IsFree},  
-            case {XP, YP} =:= {XT, YT} andalso IsFree of
-                true ->
-                    NewRef = make_ref(),
-                    % Car is parking 
-                    ambient ! {park, self(), XT, YT, NewRef},
-                    render ! {parked, S, XP, YP, true},
-                    render ! {status, "Sono parcheggiato"},
-                    % Car is parked and waiting 
-                    Time = rand:uniform(5),
-                    timer:sleep(Time * 1000),
-                    % Car is leaving
-                    ambient ! {leave, self(), NewRef},
-                    render ! {parked, S, XP, YP, false},
-                    render ! {status, "Sono ripartito"},
-                    detect(S, {XP,YP});
-                false ->
-                    detect(S, {XP,YP}, {XT, YT})
-            end
+            detect(S, {XP,YP}, {XT, YT})
     end.
 
 move(Xi, Yi, Xi, Yi) ->
     {Xi, Yi};
 
-% Case in which (Xi, Yi) and (Xf, Yf) are aligned alongside y-axis
+% Case in which (Xi, Yi) and (Xf, Yf) are aligned alongside x-axis
 move(Xi, Yi, Xi, Yf) ->
     Direction = 2,
     move_along(Xi, Yi, Xi, Yf, Direction);
 
-% Case in which (Xi, Yi) and (Xf, Yf) are aligned alongside x-axis
+% Case in which (Xi, Yi) and (Xf, Yf) are aligned alongside y-axis
 move(Xi, Yi, Xf, Yi) ->
     Direction = 1,
     move_along(Xi, Yi, Xf, Yi, Direction);
@@ -278,7 +294,6 @@ move_along(Xi, Yi, Xf, _, 1) ->
     D_m = ?GRID_WIDTH - Xi + Xf,
 
     % Grid distance
-    D_g = abs_dif(Xf,Xi),
     D_g = abs(Xf - Xi),
     
     case min(D_m, D_g) of
@@ -288,13 +303,14 @@ move_along(Xi, Yi, Xf, _, 1) ->
             % io:format("Car along x: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi + Step, Yi]),
             {Xi + Step, Yi};
         D_m ->
-            Step = signed_norm(?GRID_WIDTH, Xi),
+            Step = signed_norm(?GRID_WIDTH+1, Xi),
 
             % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_WIDTH`.
             % If the modular sum is equal to 0, we want the first position in the grid,
             % so we always compute the max between the modular sum and 1.
-            New_X = max(Xi+Step rem (?GRID_WIDTH + 1), 1),
+            New_X = max((Xi+Step) rem (?GRID_WIDTH + 1), 1),
             % io:format("Car along x: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, New_X, Yi]),
+            % io:format("PID: ~p, Prev x: ~p, New x: ~p, X target: ~p, step: ~p~n", [self(), Xi, New_X, Xf, Step]),
             {New_X, Yi}
     end;
 
@@ -315,24 +331,18 @@ move_along(Xi, Yi, _, Yf, 2) ->
             % io:format("Car along y: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi, Yi + Step]),
             {Xi, Yi + Step};
         D_m ->
-            Step = signed_norm(?GRID_HEIGHT, Yi),
+            Step = signed_norm(?GRID_HEIGHT + 1, Yi),
 
             % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_HEIGHT`.
             % If the modular sum is equal to 0, we want the first position in the grid,
             % so we always compute the max between the modular sum and 1.
             New_Y = max((Yi + Step) rem (?GRID_HEIGHT + 1), 1),
             % io:format("Car along y: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi, New_Y]),
+            % io:format("PID: ~p, Prev y: ~p, New y: ~p~n", [self(), Yi, New_Y]),
+            % io:format("PID: ~p, Prev y: ~p, New y: ~p, Y target: ~p, step: ~p~n", [self(), Xi, New_Y, Yf, Step]),
+
             {Xi, New_Y}
     end.    
 
-signed_norm(Xm, X0) ->
-    case Xm - X0 of
-        0 -> 0;
-        _ -> trunc((Xm - X0) / abs(Xm - X0))
-    end.
-
-abs_dif(A,B) ->
-    case A - B of
-        0 -> 0;
-        _ -> abs(A - B)
-    end.
+signed_norm(X, X) -> 0;
+signed_norm(Xm, X0) -> trunc((Xm - X0) / abs(Xm - X0)).

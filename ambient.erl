@@ -5,25 +5,28 @@
 main() ->
     Grid = utils:init_grid(libero),
     A = spawn(?MODULE, loop, [Grid, []]),
+
     register(ambient, A),
+
     W = spawn(wellknown, main, [[]]),
     register(wellknown, W),
 
     Cars = [spawn_link(car, main, []) || _ <- lists:seq(1, ?N_CARS)],
-    % io:format("Number of cars: ~p~n", [length(Cars)]),
+    
     R = spawn_link(render, main, []),
     register(render, R),
+    render ! {render_status, ambient, "Ambient started."},
+    
     car_killer(Cars).
 
 car_killer(Cars) ->
-    timer:sleep(?TIME_STEP),
-    % % Car = lists:nth(rand:uniform(length(Cars)), Cars),
-    % % % io:format("Killing car ~p~n", [Car]),
-    % % exit(Car, die),
-    % % % io:format("Respawning car ~p~n", [Car]),
-    % % NewCar = spawn(car, main, []),
-    % car_killer([NewCar|lists:delete(Car, Cars)]).
-    car_killer(Cars).
+    timer:sleep(10000),
+    Car = lists:nth(rand:uniform(length(Cars)), Cars),
+    % io:format("Killing car ~p~n", [Car]),
+    exit(Car, die),
+    % io:format("Respawning car ~p~n", [Car]),
+    NewCar = spawn(car, main, []),
+    car_killer([NewCar|lists:delete(Car, Cars)]).
 
 loop(Grid, ParkedCars) ->
     receive
@@ -49,8 +52,10 @@ loop(Grid, ParkedCars) ->
                 libero ->
                     Mref = monitor(process, PID),
                     NewGrid = utils:set_state(Grid, X, Y, occupato),
+                    render ! {render_status, ambient, {"Car " ,PID, " parked in ", {X,Y}}},
                     loop(NewGrid, ParkedCars ++ [{PID,X,Y, Ref, Mref}]);
                 _ ->
+                    render ! {render_status, ambient, {"Car ",PID," cannot park in ",{X,Y} ," Killing it."}},
                     exit(PID, full),
                     loop(Grid, ParkedCars)
             end;
@@ -60,6 +65,7 @@ loop(Grid, ParkedCars) ->
                 {PID, X, Y, OldRef, Mref} when Ref =:= OldRef -> 
                         NewGrid = utils:set_state(Grid, X, Y, libero),
                         demonitor(Mref),
+                        render ! {render_status, ambient, {"Car ", PID, " left ",{X, Y}}},
                         loop(NewGrid, lists:keydelete(PID, 1, ParkedCars));
                     _ ->
                         % Error! PID not found or Ref is not the same, define behaviour

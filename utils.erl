@@ -29,6 +29,7 @@ init_grid(W, H, State) ->
 find_free_cell(Grid) ->
     TX = rand:uniform(?GRID_WIDTH),
     TY = rand:uniform(?GRID_HEIGHT),
+    
     case get_state(Grid, TX, TY) =:= occupato of
         true ->
             find_free_cell(Grid);
