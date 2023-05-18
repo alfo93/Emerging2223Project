@@ -3,40 +3,26 @@
 -include("utils.hrl").
 
 set_state(Grid, X, Y, NewState) ->
-    case lists:nth(X, Grid) of
-        Row when is_list(Row) ->
-            case lists:nth(Y, Row) of
-                State when State =:= libero; State =:= occupato; State =:= sconosciuto; State =:= macchina ->
-                    NewRow = lists:sublist(Row, Y-1) ++ [NewState] ++ lists:nthtail(Y, Row),
-                    lists:sublist(Grid, X-1) ++ [NewRow] ++ lists:nthtail(X, Grid);
-                _ ->
-                    Grid
-            end
-    end.
+        Row = lists:nth(X, Grid),
+        NewRow = lists:sublist(Row, Y-1) ++ [NewState] ++ lists:nthtail(Y, Row),
+        lists:sublist(Grid, X-1) ++ [NewRow] ++ lists:nthtail(X, Grid).
 
 get_state(Grid, X, Y) ->
-    case lists:nth(X, Grid) of
-        Row when is_list(Row) -> lists:nth(Y, Row)
-    end.
+        Row = lists:nth(X, Grid),
+        lists:nth(Y, Row).
 
-init_grid(State) ->
-    init_grid(?GRID_WIDTH, ?GRID_HEIGHT, State).
+init_grid(State) -> init_grid(?GRID_WIDTH, ?GRID_HEIGHT, State).
 
 init_grid(W, H, State) ->
-    lists:map(fun(_) -> lists:map(fun(_) -> State end, lists:seq(1, H)) end, lists:seq(1, W)).
-
+    lists:duplicate(H, lists:duplicate(W, State)).
 
 find_free_cell(Grid) ->
     TX = rand:uniform(?GRID_WIDTH),
     TY = rand:uniform(?GRID_HEIGHT),
     
-    case get_state(Grid, TX, TY) =:= occupato of
-        true ->
-            find_free_cell(Grid);
-        false ->
-            {TX, TY}
+    case get_state(Grid, TX, TY) of
+        occupied -> find_free_cell(Grid);
+        _ -> {TX, TY}
     end.
 
-
-clear_screen() ->
-    io:format("~s\e[H\e[2J", ["\e"]).
+clear_screen() -> io:format("~s\e[H\e[2J", ["\e"]).

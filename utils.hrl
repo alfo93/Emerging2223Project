@@ -2,4 +2,5 @@
 -define(GRID_WIDTH, 10).
 -define(GRID_HEIGHT, 10).
 -define(TIME_STEP, 3000).
+-define(KILLER_TIMEOUT, 10000).
 -define(N_CARS, 10).

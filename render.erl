@@ -2,8 +2,6 @@
 -export([main/0]).
 -include("utils.hrl").
 
-
-
 % La funzione loop/0 rappresenta il ciclo di vita dell'attore render 
 % dove ogni 2 secondi viene richiesta la griglia dell'ambient 
 % e stampata a video tramite la funzione print_grid/0.
@@ -45,6 +43,7 @@ loop(Pos, Targets, Parked, Friendships, Status, Death) ->
             Cars_n = length(Pos),
             Cars_parked = [IsParked || {_, {_, _, IsParked}} <- Parked, IsParked],
             Parked_car_n = length(Cars_parked),
+            io:format("Legend : C = Car, P = Parked~n~n"),
             print_ambient_info(Status),
             io:format("Cars: ~p, Parked: ~p, Moving: ~p~n", [Cars_n, Parked_car_n, Cars_n - Parked_car_n]), 
             io:format("Death: ~p~n", [Death]),
@@ -55,14 +54,13 @@ loop(Pos, Targets, Parked, Friendships, Status, Death) ->
             loop(Pos, Targets, Parked, Friendships, Status, Death)
     end.
 
-
 print_grid(Pos) ->
     ambient ! get_grid,
     receive
         {grid, ParkingGrid} ->
             Grid_car = lists:foldl(fun({_PID, {X, Y}}, Grid) ->
                 case utils:get_state(Grid, X, Y) of
-                    libero -> utils:set_state(Grid, X, Y, macchina);
+                    free -> utils:set_state(Grid, X, Y, car);
                     _ -> Grid
                 end
             end, ParkingGrid, Pos),
@@ -81,11 +79,14 @@ print_grid(Pos) ->
             end, Grid)
     end.
 
-print_cell(libero) -> " ";
-print_cell(occupato) -> "P";
-print_cell(macchina) -> "C".
+print_cell(free) -> " ";
+
+print_cell(occupied) -> "P";
+
+print_cell(car) -> "C".
 
 print_car_info([], _, _, _, _) -> io:format("------------------------------------------------------~n");
+
 print_car_info([{PID, {X, Y}}|PIDS], Targets, Parked, Friendships, Status) -> 
     {_, {X_T, Y_T}} = lists:keyfind(PID, 1, Targets),
     {_, {_, _, IsParked}} = lists:keyfind(PID, 1, Parked),
@@ -98,7 +99,5 @@ print_car_info([{PID, {X, Y}}|PIDS], Targets, Parked, Friendships, Status) ->
     print_car_info(PIDS, Targets, Parked, Friendships, Status).
 
 print_ambient_info(Status) ->
-    % case lists:keyfind(ambient, 1, Status) of
-        % false -> io:format("Ambient")
-    {_, S} = lists:keyfind(ambient, 1, Status),
+    {_, S} = lists:keyfind(whereis(ambient), 1, Status),
     io:format("Ambient: ~p~n", [S]).

@@ -3,19 +3,19 @@
 
 main(Pids) ->
     receive
-        % aggiungo una macchina (data dalla coppia FS) alla lista di macchine
+        % register new pid
         {register_pid, Pid} ->
             main([Pid|Pids]);
-        % rimuovo una macchina dalla lista di macchine
+        % remove the pid from the list
         {remove_pid, Pid} ->
             main(lists:delete(Pid, Pids));
-        % sostituisco una macchina con un altra nel caso in cui sia crashata
+        % replace old pid with new pid
         {replace_pid, OldPid, NewPid} ->
             NewPids = lists:delete(OldPid, Pids),
             main([NewPid|NewPids]);
-        % invio la lista di macchine ad una macchina
+        % Send list of cars to another car
         {getFriends, F, S, Ref} ->
-            % NewFriends -> permutazione della lista di tutte le macchine.
+            % NewFriends -> car list permutation.
             NewFriends = create_friends_list(Pids, {F, S}),
             F ! {myFriends, NewFriends, Ref},
             main(Pids);
@@ -23,11 +23,9 @@ main(Pids) ->
             main(Pids)
     end.
 
-
-
-% permutazione della lista di macchine
+% List permutation
 permutation(X) ->
-    [Y||{_,Y} <- lists:sort([ {rand:uniform(), N} || N <- X])].
+    [ Y || {_,Y} <- lists:sort([ {rand:uniform(), N} || N <- X]) ].
 
 % FS: {F, S} -> { Friendship, State }
 % List: [{F, S}*] 

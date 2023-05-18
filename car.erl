@@ -3,20 +3,23 @@
 -include("utils.hrl").
 
 main() ->
-    % Attore state
+    % State actor
     S = spawn(?MODULE, state, []), 
-    % Attore detect
+    % Detect actor
     D = spawn(?MODULE, detect, []),
-    % Attore friendship
+    % Friendship Actor
     F = spawn_link(?MODULE, friendship, []),
     monitor(process, F),
  
     process_flag(trap_exit, true),
+    
+    % link to ambient
+    link(whereis(ambient)),
 
-    % Registrazione dei pid dei processi
+    % Registering processes' pids
     wellknown ! {register_pid, {F, S}},
 
-    % Invio dei pid agli attori della macchina
+    % Sending pids to other `car` actors.
     F ! {pid, S, D},
     D ! {pid, S, F},
     S ! {pid, F, D},
@@ -85,7 +88,7 @@ friendship(Friends, MyState, MyDetect) ->
 
 
 % S -> State process of caller car
-% FriendsLisr -> Actual list of friends of caller car
+% FriendsLis -> Actual list of friends of caller car
 ask_for_friends(S,FriendsList) ->
     ask_for_friends(S, FriendsList, FriendsList).
 
@@ -102,10 +105,7 @@ ask_for_friends(S, [], FriendsList) ->
     wait_for_response(S, FriendsList, FriendsList, Ref).
 
 
-% S -> State process of caller car
-% F -> List of friends of caller car
-% FriendsList -> List of friends of caller car
-% Ref -> Reference of the message
+% wait the response from the friends
 wait_for_response(S, F, FriendsList, Ref) ->
     receive
         {getFriends, PID1, PID2, NewRef} -> 
@@ -133,15 +133,14 @@ wait_for_response(S, F, FriendsList, Ref) ->
 
 
 % remove_dead_friend: (list, pid) -> list
-% rimuove dalla lista di amici 
-% la coppia con il pid del processo morto
+% Removes from friends' list pair with the PID of dead process 
 remove_dead_friend(Friends, DeadFriend) -> lists:filter(fun({F, _}) -> F =/= DeadFriend end, Friends).
 
 
 
 % STATE COMPONENT
 state() ->
-    Grid = utils:init_grid(sconosciuto),
+    Grid = utils:init_grid(unknown),
     receive {pid, F, D} ->
         link(F),
         link(D),
@@ -150,22 +149,16 @@ state() ->
 
 % Take the information of the Grid's cells.
 % When a new information is discoverd, send a message to the friends (state components)
-% If the goal is occupied, change it
-% F -> pid of friendship component
-% D -> pid of detect component
-% Grid -> grid of the ambient
-% TX, TY -> target position
 new_state(true) ->
-    libero;
+    free;
 new_state(false) ->
-    occupato.
+    occupied.
 
 state(F, D, Grid, TX, TY) ->
     receive
         {askTarget, D, Ref} ->
 
             {NX, NY} = utils:find_free_cell(Grid),
-            % render ! {render_status, self(), io_lib:format("Sending new target: {~B, ~B}", [NX, NY])},
             D ! {newTarget, NX, NY, Ref},
 
             state(F, D, Grid, NX, NY);
@@ -228,7 +221,6 @@ detect(S, {XP,YP}, {XT,YT} ) ->
     render ! {position, S, NEW_XP, NEW_YP},
     
     % Send to render movement status
-    % render ! {render_status, S, {"Moving to position", {NEW_XP, NEW_YP}}},
     render ! {render_status, S, io_lib:format("Moving to position {~B, ~B}", [NEW_XP, NEW_YP])},
 
     detect_response(S, {NEW_XP, NEW_YP}, {XT,YT}, Ref).
@@ -256,7 +248,6 @@ detect_response(S, {XP, YP}, {XP, YP}, Ref) ->
 
 % Generic case {XP, YP} =/= {XT, YT}, target not reached
 detect_response(S, {XP,YP}, {XT,YT}, Ref) ->
-    % QUI
     receive 
         {updateTarget, S, {NEW_XT, NEW_YT}} ->
             render ! {target, S, XT, YT},
@@ -266,6 +257,7 @@ detect_response(S, {XP,YP}, {XT,YT}, Ref) ->
             detect(S, {XP,YP}, {XT, YT})
     end.
 
+% Should never reach it, (Xi, Yi) =:= (Xt, Yt)
 move(Xi, Yi, Xi, Yi) ->
     {Xi, Yi};
 
@@ -286,7 +278,6 @@ move(Xi, Yi, Xf, Yf) ->
     move_along(Xi, Yi, Xf, Yf, Direction).
 
 % Direction = 1 -> move alongside x
-% Direction = 2 -> move alongside y
 move_along(Xi, Yi, Xf, _, 1) ->
     % Compute min between (Xi, Xf) and ((Xi, W) + (W, Xf))
 
@@ -300,7 +291,6 @@ move_along(Xi, Yi, Xf, _, 1) ->
         D_g ->
             % signed_norm returns +-1, gives the direction alongside x. 
             Step = signed_norm(Xf, Xi),
-            % io:format("Car along x: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi + Step, Yi]),
             {Xi + Step, Yi};
         D_m ->
             Step = signed_norm(?GRID_WIDTH+1, Xi),
@@ -309,11 +299,10 @@ move_along(Xi, Yi, Xf, _, 1) ->
             % If the modular sum is equal to 0, we want the first position in the grid,
             % so we always compute the max between the modular sum and 1.
             New_X = max((Xi+Step) rem (?GRID_WIDTH + 1), 1),
-            % io:format("Car along x: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, New_X, Yi]),
-            % io:format("PID: ~p, Prev x: ~p, New x: ~p, X target: ~p, step: ~p~n", [self(), Xi, New_X, Xf, Step]),
             {New_X, Yi}
     end;
 
+% Direction = 2 -> move alongside y
 move_along(Xi, Yi, _, Yf, 2) ->
     % Compute min between (Yi, Yf) and ((Yi, H) + (H, Yf))
 
@@ -328,7 +317,6 @@ move_along(Xi, Yi, _, Yf, 2) ->
     case min(D_m, D_g) of
         D_g ->
             Step = signed_norm(Yf, Yi),
-            % io:format("Car along y: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi, Yi + Step]),
             {Xi, Yi + Step};
         D_m ->
             Step = signed_norm(?GRID_HEIGHT + 1, Yi),
@@ -337,10 +325,6 @@ move_along(Xi, Yi, _, Yf, 2) ->
             % If the modular sum is equal to 0, we want the first position in the grid,
             % so we always compute the max between the modular sum and 1.
             New_Y = max((Yi + Step) rem (?GRID_HEIGHT + 1), 1),
-            % io:format("Car along y: move ~p, ~p -> ~p, ~p~n", [Xi, Yi, Xi, New_Y]),
-            % io:format("PID: ~p, Prev y: ~p, New y: ~p~n", [self(), Yi, New_Y]),
-            % io:format("PID: ~p, Prev y: ~p, New y: ~p, Y target: ~p, step: ~p~n", [self(), Xi, New_Y, Yf, Step]),
-
             {Xi, New_Y}
     end.    
 
