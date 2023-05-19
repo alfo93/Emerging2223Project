@@ -10,3 +10,6 @@ compile:
 
 run:
 	$(ERL) -s ambient main -s init stop
+
+clean:
+	rm -rf *.beam erl_crash.dump

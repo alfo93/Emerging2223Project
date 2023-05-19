@@ -7,7 +7,7 @@
 % e stampata a video tramite la funzione print_grid/0.
 
 main() ->
-    timer:send_after(1000, timeout),
+    timer:send_after(?MILLS_TO_SECOND, timeout),
     loop([], [], [], [], [], []).
 
 loop(Pos, Targets, Parked, Friendships, Status, Death) ->
@@ -21,7 +21,7 @@ loop(Pos, Targets, Parked, Friendships, Status, Death) ->
         {parked, PID, X,Y, IsParked} ->
             NewParked = lists:keydelete(PID, 1, Parked),
             loop(Pos, Targets, NewParked ++ [{PID, {X,Y,IsParked}}], Friendships, Status, Death);
-        {friendship, PID, PIDLIST} ->
+        {friends, PID, PIDLIST} ->
             monitor(process, PID),
             NewFriendships = lists:keydelete(PID, 1, Friendships),
             loop(Pos, Targets, Parked, NewFriendships ++ [{PID,{PIDLIST}}], Status, Death);
@@ -35,7 +35,7 @@ loop(Pos, Targets, Parked, Friendships, Status, Death) ->
             NewTargets = lists:keydelete(PID, 1, Targets),
             NewParked = lists:keydelete(PID, 1, Parked),
             NewStatus = lists:keydelete(PID, 1, Status),
-            NewDeath = lists:usort(Death ++ [PID]),
+            NewDeath = lists:uniq(Death ++ [PID]),
             loop(NewPos, NewTargets, NewParked, NewFriendships, NewStatus, NewDeath);
         timeout ->
             utils:clear_screen(),
@@ -48,7 +48,7 @@ loop(Pos, Targets, Parked, Friendships, Status, Death) ->
             io:format("Cars: ~p, Parked: ~p, Moving: ~p~n", [Cars_n, Parked_car_n, Cars_n - Parked_car_n]), 
             io:format("Death: ~p~n", [Death]),
             print_car_info(Pos, Targets, Parked, Friendships, Status),
-            timer:send_after(1000, timeout),
+            timer:send_after(?MILLS_TO_SECOND, timeout),
             loop(Pos, Targets, Parked, Friendships, Status, Death);
         _ -> 
             loop(Pos, Targets, Parked, Friendships, Status, Death)

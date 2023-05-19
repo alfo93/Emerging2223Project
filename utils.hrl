@@ -1,6 +1,8 @@
--define(MAX_FRIENDS,5).
+-define(N_FRIENDS, 5).
 -define(GRID_WIDTH, 10).
 -define(GRID_HEIGHT, 10).
--define(TIME_STEP, 3000).
+-define(TIME_STEP, 2000).
 -define(KILLER_TIMEOUT, 10000).
--define(N_CARS, 10).
+-define(N_CARS, 7).
+-define(MAX_PARK_TIME, 5).
+-define(MILLS_TO_SECOND, 1000).

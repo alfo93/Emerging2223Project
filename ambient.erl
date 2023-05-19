@@ -1,7 +1,8 @@
 -module(ambient).
--export([main/0, car_killer/1, loop/1]).
+-export([main/0, loop/1]).
 -include("utils.hrl").
 
+% Main program, creates everything
 main() ->
     % Initializing grid.
     Grid = utils:init_grid(free),
@@ -15,7 +16,9 @@ main() ->
     register(wellknown, W),
 
     % Spawn `N_CARS` cars.
+    % The position of the cars is randomly assigned on car creation by `detect` actor.
     Cars = [spawn(car, main, []) || _ <- lists:seq(1, ?N_CARS)],
+
     
     % Spawn `render` actor and register its atom.
     R = spawn_link(render, main, []),
@@ -29,8 +32,9 @@ car_killer(Cars) ->
     timer:sleep(?KILLER_TIMEOUT),
     Car = lists:nth(rand:uniform(length(Cars)), Cars),  
     exit(Car, die),
+    timer:sleep(?MILLS_TO_SECOND),
 
-    NewCar = spawn_link(car, main, []),
+    NewCar = spawn(car, main, []),
     car_killer([NewCar|lists:delete(Car, Cars)]).
 
 loop(Grid) ->
@@ -59,11 +63,13 @@ loop(Grid, ParkedCars) ->
                 free ->
                     Mref = monitor(process, PID),
                     NewGrid = utils:set_state(Grid, X, Y, occupied),
-                    render ! {render_status, self(), {"Car " ,PID, " parked in ", {X,Y}}},
+                    Message = lists:flatten(io_lib:format("Car ~p parked in ~p", [PID, {X, Y}])),
+                    render ! {render_status, self(), Message},
                     loop(NewGrid, ParkedCars ++ [{PID,X,Y, Ref, Mref}]);
                 _ ->
                     % Handle the case where the spot is not free. 
-                    render ! {render_status, self(), {"Car ",PID," cannot park in ",{X,Y} ," Killing it."}},
+                    Message = lists:flatten(io_lib:format("Car ~p cannot park in ~p. Killing it.", [PID, {X, Y}])),
+                    render ! {render_status, self(), Message},
                     exit(PID, park_full),
                     loop(Grid, ParkedCars)
             end;
@@ -75,7 +81,8 @@ loop(Grid, ParkedCars) ->
                 {PID, X, Y, Ref, Mref} -> 
                         NewGrid = utils:set_state(Grid, X, Y, free),
                         demonitor(Mref),
-                        render ! {render_status, self(), {"Car ", PID, " left ",{X, Y}}},
+                        Message = lists:flatten(io_lib:format("Car ~p left ~p", [PID, {X, Y}])),
+                        render ! {render_status, self(), Message},
                         loop(NewGrid, lists:keydelete(PID, 1, ParkedCars));
                 _ ->
                         exit(PID, not_parked),
@@ -85,8 +92,8 @@ loop(Grid, ParkedCars) ->
         % Handle the case where a parked car dies.
         {'DOWN', _, process, PID, _} ->
             case lists:keyfind(PID, 1, ParkedCars) of
+                % Strange case, should not occurr
                 false ->
-                    % Handle the case where PID is not found in ParkedCars
                     loop(Grid, ParkedCars);
                 {_, X, Y, _Ref, Mref} ->
                     demonitor(Mref),
@@ -94,8 +101,3 @@ loop(Grid, ParkedCars) ->
                     loop(NewGrid, lists:keydelete(PID, 1, ParkedCars))
             end
     end.
-
-
-
-
-

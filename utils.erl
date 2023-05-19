@@ -17,8 +17,8 @@ init_grid(W, H, State) ->
     lists:duplicate(H, lists:duplicate(W, State)).
 
 find_free_cell(Grid) ->
-    TX = rand:uniform(?GRID_WIDTH),
-    TY = rand:uniform(?GRID_HEIGHT),
+    TX = rand:uniform(?GRID_HEIGHT),
+    TY = rand:uniform(?GRID_WIDTH),
     
     case get_state(Grid, TX, TY) of
         occupied -> find_free_cell(Grid);

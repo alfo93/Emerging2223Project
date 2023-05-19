@@ -4,11 +4,9 @@
 main(Pids) ->
     receive
         % register new pid
-        {register_pid, Pid} ->
-            main([Pid|Pids]);
-        % remove the pid from the list
-        {remove_pid, Pid} ->
-            main(lists:delete(Pid, Pids));
+        {register_pid, {F, S}} ->         
+            monitor(process, F),
+            main([{F, S}|Pids]);
         % replace old pid with new pid
         {replace_pid, OldPid, NewPid} ->
             NewPids = lists:delete(OldPid, Pids),
@@ -19,6 +17,10 @@ main(Pids) ->
             NewFriends = create_friends_list(Pids, {F, S}),
             F ! {myFriends, NewFriends, Ref},
             main(Pids);
+        {'DOWN', Ref, process, Pid, _Reason} ->
+            demonitor(Ref, [flush]),
+            Dead_Car = lists:keyfind(Pid, 1, Pids),
+            main(lists:delete(Dead_Car, Pids));
         _ ->
             main(Pids)
     end.

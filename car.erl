@@ -27,9 +27,11 @@ main() ->
 
 loop(F, S, D) ->
     receive
+        % prevent the death if the children dies
         {'EXIT', F, _reason} ->
             loop(F, S, D);
 
+        % Ambient died, everything must die with it.
         {'EXIT', _, _reason} ->
             exit(_reason);
 
@@ -63,15 +65,16 @@ friendship() ->
 % MyState -> State process of caller car
 % MyDetect -> Detect process of caller car
 friendship(Friends, MyState, MyDetect) ->
-    render ! {friendship, MyState, Friends},
-    case length(Friends) < ?MAX_FRIENDS of
+    render ! {friends, MyState, Friends},
+    case length(Friends) < ?N_FRIENDS of
         true ->
-            % Be sure to have `MAX_FRIENDS` friends for each car.
-            AllMyFriends = lists:sublist(ask_for_friends(MyState, Friends), ?MAX_FRIENDS),          
+            AllMyFriends = lists:sublist(ask_for_friends(MyState, Friends), ?N_FRIENDS),          
             [ monitor(process, F) || {F, _} <-lists:subtract(AllMyFriends, Friends)],
             friendship(AllMyFriends, MyState, MyDetect);
         false ->
             receive
+                % PID1 -> friend actor
+                % PID2 -> state actor
                 {getFriends, PID1, PID2, Ref} -> 
                     NewFriends = lists:delete({PID1,PID2}, Friends),
                     PID1 ! {myFriends, NewFriends, Ref},
@@ -79,10 +82,16 @@ friendship(Friends, MyState, MyDetect) ->
                 {getOwnFriends, MyState} ->
                     MyState ! {myOwnFriends, Friends},
                     friendship(Friends, MyState, MyDetect);
-                {'DOWN', _Ref, process, _DeadPid, _Reason} ->
+
+                % Once a friend dies, find new friend and act recursively with new list of friends
+                {'DOWN', _Ref, process, DeadPid, _Reason} ->
                     demonitor(_Ref, [flush]),
-                    render ! {render_status, MyState, {"Friend died", _DeadPid}},
-                    friendship(remove_dead_friend(Friends, _DeadPid), MyState, MyDetect)
+                    case lists:keyfind(DeadPid, 1, Friends) of
+                        false -> ok;
+                        {_ , Dead_S} ->
+                            render ! {render_status, MyState, {"Friend died", Dead_S}},
+                            friendship(remove_dead_friend(Friends, DeadPid), MyState, MyDetect)
+                    end
             end
     end.
 
@@ -111,21 +120,26 @@ wait_for_response(S, F, FriendsList, Ref) ->
         {getFriends, PID1, PID2, NewRef} -> 
             NewFriends = lists:delete({PID1,PID2}, FriendsList),
             PID1 ! {myFriends, NewFriends, NewRef},
-            MyNewFriends = lists:usort(FriendsList ++ NewFriends),
-            case length(MyNewFriends) < ?MAX_FRIENDS of
+            MyNewFriends = lists:usort(FriendsList ++ [{PID1, PID2}]),
+            case length(MyNewFriends) < ?N_FRIENDS of
                 true ->
                     ask_for_friends(S, F, MyNewFriends);
                 false ->
                     MyNewFriends
             end;
+
+        % NewFriends: [{Friend, State}*]
         {myFriends, NewFriends, Ref} ->
-            NewFriendsList = lists:usort(FriendsList ++ NewFriends),
-            case length(NewFriendsList) < ?MAX_FRIENDS of
+            % remove the duplicate friend from the list add the new friends to the list
+            NewFriendsList = lists:uniq(FriendsList ++ NewFriends),
+            case length(NewFriendsList) < ?N_FRIENDS of
                 true ->
                     ask_for_friends(S, F, NewFriendsList);
                 false ->
                     NewFriendsList
             end;
+
+        % Avoid making friends with dead pid
         {'DOWN', _Ref, process, _Pid, _Reason} ->
             demonitor(Ref, [flush]),
             wait_for_response(S, remove_dead_friend(F, _Pid), remove_dead_friend(FriendsList, _Pid), Ref)
@@ -140,11 +154,13 @@ remove_dead_friend(Friends, DeadFriend) -> lists:filter(fun({F, _}) -> F =/= Dea
 
 % STATE COMPONENT
 state() ->
-    Grid = utils:init_grid(unknown),
+    Grid = utils:init_grid(?GRID_WIDTH, ?GRID_HEIGHT, unknown),
     receive {pid, F, D} ->
         link(F),
         link(D),
-        state(F, D, Grid, 0,0)
+
+        % (1, 1) temporary target, will be known after initialization.
+        state(F, D, Grid, 1, 1)
     end.
 
 % Take the information of the Grid's cells.
@@ -157,7 +173,7 @@ new_state(false) ->
 state(F, D, Grid, TX, TY) ->
     receive
         {askTarget, D, Ref} ->
-
+            
             {NX, NY} = utils:find_free_cell(Grid),
             D ! {newTarget, NX, NY, Ref},
 
@@ -216,7 +232,7 @@ detect(S, {XP,YP}) ->
 
 detect(S, {XP,YP}, {XT,YT} ) ->
     timer:sleep(?TIME_STEP),
-    {NEW_XP, NEW_YP} = move(XP, YP, XT, YT), 
+    {NEW_XP, NEW_YP} = move(XP, YP, XT, YT),
     ambient ! {isFree, self(), NEW_XP, NEW_YP, Ref = make_ref()},
     render ! {position, S, NEW_XP, NEW_YP},
     
@@ -235,12 +251,14 @@ detect_response(S, {XP, YP}, {XP, YP}, Ref) ->
             ambient ! {park, self(), XP, YP, NewRef},
             render ! {parked, S, XP, YP, true},
             % Car is parked and waiting 
-            Time = rand:uniform(5),
+            Time = rand:uniform(?MAX_PARK_TIME),
             render ! {render_status, S, io_lib:format("Parked, waiting for ~B seconds", [Time])},
-            timer:sleep(Time * 1000),
+            timer:sleep(Time * ?MILLS_TO_SECOND),
             % Car is leaving
             ambient ! {leave, self(), NewRef},
             render ! {parked, S, XP, YP, false},
+
+            % Looking for a new target
             detect(S, {XP,YP});
         _ -> 
             detect_response(S, {XP, YP}, {XP, YP}, Ref)
@@ -282,7 +300,7 @@ move_along(Xi, Yi, Xf, _, 1) ->
     % Compute min between (Xi, Xf) and ((Xi, W) + (W, Xf))
 
     % Modular distance
-    D_m = ?GRID_WIDTH - Xi + Xf,
+    D_m = ?GRID_HEIGHT - Xi + Xf,
 
     % Grid distance
     D_g = abs(Xf - Xi),
@@ -293,21 +311,21 @@ move_along(Xi, Yi, Xf, _, 1) ->
             Step = signed_norm(Xf, Xi),
             {Xi + Step, Yi};
         D_m ->
-            Step = signed_norm(?GRID_WIDTH+1, Xi),
+            Step = signed_norm(?GRID_HEIGHT+1, Xi),
 
-            % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_WIDTH`.
+            % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_HEIGHT`.
             % If the modular sum is equal to 0, we want the first position in the grid,
             % so we always compute the max between the modular sum and 1.
-            New_X = max((Xi+Step) rem (?GRID_WIDTH + 1), 1),
+            New_X = max((Xi+Step) rem (?GRID_HEIGHT + 1), 1),
             {New_X, Yi}
     end;
 
-% Direction = 2 -> move alongside y
+% Direction = 2 -> move alongside x
 move_along(Xi, Yi, _, Yf, 2) ->
     % Compute min between (Yi, Yf) and ((Yi, H) + (H, Yf))
 
     % Modular distance
-    D_m = ?GRID_HEIGHT - Yi + Yf,
+    D_m = ?GRID_WIDTH - Yi + Yf,
 
 
     % Grid distance
@@ -319,12 +337,12 @@ move_along(Xi, Yi, _, Yf, 2) ->
             Step = signed_norm(Yf, Yi),
             {Xi, Yi + Step};
         D_m ->
-            Step = signed_norm(?GRID_HEIGHT + 1, Yi),
+            Step = signed_norm(?GRID_WIDTH + 1, Yi),
 
-            % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_HEIGHT`.
+            % Since erlang counts grids from 1, we compute the modular sum r.t. `GRID_WIDTH`.
             % If the modular sum is equal to 0, we want the first position in the grid,
             % so we always compute the max between the modular sum and 1.
-            New_Y = max((Yi + Step) rem (?GRID_HEIGHT + 1), 1),
+            New_Y = max((Yi + Step) rem (?GRID_WIDTH + 1), 1),
             {Xi, New_Y}
     end.    
 
